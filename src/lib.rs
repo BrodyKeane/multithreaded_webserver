@@ -1,12 +1,12 @@
 use std::{
-    thread::{Builder, JoinHandle},
+    thread::{self, Builder},
     sync::{mpsc, Arc, Mutex},
     io,
 };
 
 pub struct ThreadPool {
     workers: Vec<Worker>,
-    sender: mpsc::Sender<Job>,
+    sender: Option<mpsc::Sender<Job>>,
 }
 
 type Job = Box<dyn FnOnce() + Send + 'static>; 
@@ -22,7 +22,10 @@ impl ThreadPool {
             }
         }
         assert!(workers.len() > 0);
-        ThreadPool{ workers, sender }
+        ThreadPool{
+            workers, 
+            sender: Some(sender),
+        }
     }
 
 
@@ -31,24 +34,47 @@ impl ThreadPool {
         F: FnOnce() + Send + 'static,
     {
         let job = Box::new(f);
-        self.sender.send(job).unwrap();
+        self.sender.as_ref().unwrap().send(job).unwrap();
+    }
+}
+
+impl Drop for ThreadPool {
+    fn drop(&mut self) {
+        drop(self.sender.take());
+        for worker in &mut self.workers {
+            println!("Shutting down worker {}", worker.id);
+            if let Some(thread) = worker.thread.take() {
+                thread.join().unwrap();
+            }
+        }
     }
 }
 
 struct Worker {
     id: usize,
-    thread: JoinHandle<()>,
+    thread: Option<thread::JoinHandle<()>>,
 }
 
 impl Worker {
     fn new(id: usize, receiver: Arc<Mutex<mpsc::Receiver<Job>>>) -> io::Result<Worker>{
         let builder = Builder::new();
         let thread = builder.spawn(move || loop {
-            let job = receiver.lock().unwrap().recv().unwrap();
-            println!("Worker: {id} got a job; executing.");
-            job();
+            let message = receiver.lock().unwrap().recv();
+            match message {
+                Ok(job) => {
+                    println!("Worker: {id} got a job; executing.");
+                    job();
+                },
+                Err(_) => {
+                    println!("Worker: {id} dissconnected; shutting down.");
+                    break;
+                }
+            }
         })?; 
         
-        Ok(Worker{ id, thread })
+        Ok(Worker{
+            id,
+            thread: Some(thread)
+        })
     }
-}
+}   
