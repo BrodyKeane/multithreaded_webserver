@@ -21,7 +21,7 @@ impl ThreadPool {
                 workers.push(worker);
             }
         }
-        assert!(workers.len() > 0);
+        assert!(!workers.is_empty());
         ThreadPool{
             workers, 
             sender: Some(sender),
